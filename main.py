@@ -1,1 +1,5 @@
-print("Initializing Hand Gesture Control System...")
+import GUI
+
+if __name__ == "__main__":
+    app = GUI.HandGestureApp()
+    app.mainloop()
