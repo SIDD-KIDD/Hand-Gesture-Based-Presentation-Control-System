@@ -1,0 +1,11 @@
+graph TD;
+    A[Start] -->|Capture Video Frames| B[Webcam];
+    B -->|Process Frames| C[OpenCV];
+    C -->|Detect Hand Landmarks| D[MediaPipe Hands];
+    D -->|Extract Features| E[Feature Extraction];
+    E -->|Identify Gestures| F[Gesture Recognition];
+    F -->|Map to Keyboard Actions| G[PyAutoGUI];
+    G -->|Send Key Press Events| H[Slide Navigation];
+    H -->|Update GUI & Display Feedback| I[CustomTkinter];
+    I -->|Loop Until Stop| A;
+    I -->|User Stops Tracking| J[End];
