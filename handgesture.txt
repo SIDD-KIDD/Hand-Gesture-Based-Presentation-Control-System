@@ -1,0 +1,457 @@
+Directory structure:
+└── Hand Gesture Based Presentation Control System/
+    ├── Backend.py
+    ├── GUI.py
+    ├── diagram.mmd
+    ├── main.py
+    ├── requirements.txt
+    └── res/
+
+================================================
+File: Backend.py
+================================================
+import cv2
+import mediapipe as mp
+import numpy as np
+import math
+import pyautogui as pg
+import time
+from threading import Event
+
+mp_drawing = mp.solutions.drawing_utils
+mp_hands = mp.solutions.hands
+
+stop_event = Event()  # Global stop event for thread control
+cap = None  # Global VideoCapture object
+
+def calculate_distance(x1, y1, z1, x2, y2, z2):
+    return math.sqrt((x2 - x1)**2 + (y2 - y1)**2 + (z2 - z1)**2)
+
+def get_label(index, hand, results):
+    output = None
+    if results.multi_handedness and index < len(results.multi_handedness):
+        classification = results.multi_handedness[index].classification[0]
+        label = classification.label  # "Left" or "Right"
+        score = classification.score
+        text = f"{label} {round(score, 2)}"
+
+        coords = tuple(
+            np.multiply(
+                np.array(
+                    (hand.landmark[mp_hands.HandLandmark.WRIST].x,
+                     hand.landmark[mp_hands.HandLandmark.WRIST].y)
+                ),
+                [640, 480]
+            ).astype(int)
+        )
+
+        output = text, coords
+    else:
+        if len(results.multi_hand_landmarks) == 1:
+            text = "Right 1.0"
+            coords = (10, 50)  # Default position
+            output = text, coords
+
+    return output
+
+def isGesture(hand, image, hand_label):
+    joint_list = [[12, 9, 0], [16, 13, 0], [20, 17, 0]]
+    angles = []
+
+    for joint in joint_list:
+        a = np.array([hand.landmark[joint[0]].x, hand.landmark[joint[0]].y])
+        b = np.array([hand.landmark[joint[1]].x, hand.landmark[joint[1]].y])
+        c = np.array([hand.landmark[joint[2]].x, hand.landmark[joint[2]].y])
+
+        radians = np.arctan2(c[1] - b[1], c[0] - b[0]) - np.arctan2(a[1] - b[1], a[0] - b[0])
+        angle = np.abs(radians * 180.0 / np.pi)
+        if angle > 180.0:
+            angle = 360 - angle
+        angles.append(angle)
+
+    if all(angle < 30 for angle in angles):
+        cv2.putText(image, "Gesture Locked", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        lm_wrist = hand.landmark[0]  # Wrist
+        lm_mcp = hand.landmark[9]    # Middle MCP
+        h, w, _ = image.shape
+        ref_dist = calculate_distance(
+            lm_wrist.x * w, lm_wrist.y * h, lm_wrist.z,
+            lm_mcp.x * w, lm_mcp.y * h, lm_mcp.z
+        )
+
+        lm1 = hand.landmark[8]  # Index finger tip
+        lm2 = hand.landmark[4]  # Thumb tip
+        x1, y1, z1 = lm1.x * w, lm1.y * h, lm1.z
+        x2, y2, z2 = lm2.x * w, lm2.y * h, lm2.z
+        distance = calculate_distance(x1, y1, z1, x2, y2, z2)
+        normalized_dist = distance / ref_dist if ref_dist != 0 else float('inf')
+
+        cv2.line(image, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 3)
+        cv2.putText(image, f'Norm Dist: {normalized_dist:.2f}', (int(x1) + 20, int(y1) + 20),
+                    cv2.FONT_HERSHEY_PLAIN, 2, (255, 0, 255), 3)
+
+        if normalized_dist < 0.2:
+            cv2.putText(image, f"CLICKED ({hand_label})", (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            if hand_label == "Right":
+                pg.press('right')
+                time.sleep(0.5)
+            elif hand_label == "Left":
+                pg.press('left')
+                time.sleep(0.5)
+    else:
+        cv2.putText(image, "Gesture Not Locked", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+
+def process_frame(frame, hands, mp_drawing):
+    image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    image = cv2.flip(image, 1)
+    image.flags.writeable = False
+    results = hands.process(image)
+    image.flags.writeable = True
+    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+
+    if results.multi_hand_landmarks:
+        for num, hand in enumerate(results.multi_hand_landmarks):
+            mp_drawing.draw_landmarks(
+                image, hand, mp_hands.HAND_CONNECTIONS,
+                mp_drawing.DrawingSpec(color=(121, 22, 76), thickness=2, circle_radius=4),
+                mp_drawing.DrawingSpec(color=(250, 44, 250), thickness=2, circle_radius=2),
+            )
+
+            label_info = get_label(num, hand, results)
+            if label_info:
+                text, coord = label_info
+                hand_label = text.split()[0]
+                cv2.putText(image, text, coord, cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
+                isGesture(hand, image, hand_label)
+
+    return image
+
+def main(frame_callback, error_callback):
+    global cap
+    cap = None
+
+    # Probe camera indices and backends to find a working one
+    backends = [
+        ("Default", None),
+        ("DSHOW", cv2.CAP_DSHOW),
+        ("MSMF", cv2.CAP_MSMF)
+    ]
+
+    camera_opened = False
+    for backend_name, backend in backends:
+        for index in [0, 1, 2]:
+            try:
+                if backend is not None:
+                    cap = cv2.VideoCapture(index, backend)
+                else:
+                    cap = cv2.VideoCapture(index)
+
+                if cap is not None and cap.isOpened():
+                    ret, frame = cap.read()
+                    if ret:
+                        print(f"Successfully opened camera {index} with backend {backend_name}")
+                        camera_opened = True
+                        break
+                    cap.release()
+                    cap = None
+            except Exception as e:
+                print(f"Failed to open camera {index} with backend {backend_name}: {e}")
+                if cap is not None:
+                    cap.release()
+                    cap = None
+        if camera_opened:
+            break
+
+    if not camera_opened or cap is None or not cap.isOpened():
+        error_callback("Could not open any camera. Please check your camera connections and privacy settings.")
+        return
+
+    with mp_hands.Hands(min_detection_confidence=0.8, min_tracking_confidence=0.5) as hands:
+        while cap.isOpened() and not stop_event.is_set():
+            ret, frame = cap.read()
+            if not ret:
+                print("Failed to capture frame. Exiting tracking loop...")
+                break
+
+            image = process_frame(frame, hands, mp_drawing)
+            
+            # Convert BGR frame to RGB for Tkinter
+            rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            frame_callback(rgb_image)
+
+    stop_tracking()
+
+
+def start_tracking(frame_callback, error_callback):
+    stop_event.clear()
+    main(frame_callback, error_callback)
+
+
+def stop_tracking():
+    global cap
+    stop_event.set()
+    if cap is not None:
+        try:
+            cap.release()
+        except Exception:
+            pass
+        cap = None
+    cv2.destroyAllWindows()
+
+
+
+================================================
+File: GUI.py
+================================================
+import customtkinter as ctk
+from PIL import Image, ImageTk
+import threading
+import Backend
+
+# Initialize CustomTkinter
+ctk.set_appearance_mode("Dark")
+
+class HandGestureApp(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        self.title("Hand Gesture Based Presentation Control System")
+        self.geometry("800x600")
+        self.resizable(False, False)  # Fixed window size
+        self.configure(bg="#f3e5f5")  # Light purple background
+
+        # Variables
+        self.video_running = False
+        self.video_thread = None
+
+        # UI Elements
+        self.create_widgets()
+
+        # Bind window close event to clean up camera resources
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def create_widgets(self):
+        # Header Label
+        self.header_label = ctk.CTkLabel(
+            self,
+            text="Hand Gesture Based Control System",
+            font=("Arial Bold", 24),
+            fg_color="#6a1b9a",  # Dark purple header
+            corner_radius=10,
+            text_color="white",
+            height=50,
+        )
+        self.header_label.pack(fill="x", pady=10)
+
+        # Start/Stop Button
+        self.start_stop_button = ctk.CTkButton(
+            self,
+            text="Start Tracking",
+            command=self.toggle_video,
+            font=("Arial Bold", 16),
+            fg_color="#7b1fa2",  # Vibrant purple button
+            hover_color="#9c27b0",
+        )
+        self.start_stop_button.pack(pady=15)
+
+        # Video Label (hidden by default)
+        self.video_label = ctk.CTkLabel(self, text="")
+
+        # Instruction Area
+        self.instruction_frame = ctk.CTkFrame(self, fg_color="#ede7f6", corner_radius=10)  # Light purple frame
+        self.instruction_frame.pack(pady=15, padx=20, fill="both", expand=True)
+
+        instruction_text = (
+            "Instructions:\n"
+            "1. Ensure your webcam is enabled and working.\n"
+            "2. Perform gestures in a well-lit environment for better recognition.\n"
+            "3. Use the 'Start Tracking' button to begin gesture detection.\n"
+            "4. To perform a desired click:\n"
+            "   a) Close your middle, ring, and pinky fingers as shown below.\n"
+            "   b) Touch the thumb and index finger tips to perform a click:\n"
+            "      - Right hand: Right arrow click\n"
+            "      - Left hand: Left arrow click"
+        )
+
+        instruction_label = ctk.CTkLabel(
+            self.instruction_frame,
+            text=instruction_text,
+            font=("Arial", 14),
+            anchor="w",
+            justify="left",
+            text_color="#4a148c",  # Darker purple for contrast
+        )
+        instruction_label.pack(pady=15, padx=15, anchor="w")
+
+        # Instruction Images in a Frame
+        image_frame = ctk.CTkFrame(self.instruction_frame, fg_color="#ffffff", corner_radius=10)
+        image_frame.pack(pady=10, padx=10, fill="x", expand=False)
+
+        try:
+            # Load and display first image using ctk.CTkImage to support scaling and fix warnings
+            img1 = Image.open("res\\img1.jpg")
+            img1_ctk = ctk.CTkImage(light_image=img1, dark_image=img1, size=(200, 200))
+
+            img_label1 = ctk.CTkLabel(image_frame, image=img1_ctk, text="")
+            img_label1.image = img1_ctk
+            img_label1.pack(side="left", padx=20, pady=8)
+
+            # Load and display second image using ctk.CTkImage
+            img2 = Image.open("res\\img2.jpg")
+            img2_ctk = ctk.CTkImage(light_image=img2, dark_image=img2, size=(200, 200))
+
+            img_label2 = ctk.CTkLabel(image_frame, image=img2_ctk, text="")
+            img_label2.image = img2_ctk
+            img_label2.pack(side="left", padx=20, pady=8)
+
+        except Exception as e:
+            error_label = ctk.CTkLabel(
+                self.instruction_frame,
+                text=f"Error loading images: {e}",
+                font=("Arial", 12),
+                text_color="red",
+            )
+            error_label.pack(pady=10)
+
+    def toggle_video(self):
+        if not self.video_running:
+            self.start_video()
+        else:
+            self.stop_video()
+
+    def start_video(self):
+        print("Gesture tracking started.")
+        self.video_running = True
+        self.start_stop_button.configure(
+            text="Stop Tracking", fg_color="#4a148c", hover_color="#6a1b9a"
+        )
+        # Hide instruction panel, show video view
+        self.instruction_frame.pack_forget()
+        self.video_label.pack(pady=10)
+
+        # Clear any old image on the label
+        self.video_label.configure(image=None)
+        
+        self.video_thread = threading.Thread(
+            target=Backend.start_tracking, 
+            args=(self.update_frame, self.handle_error), 
+            daemon=True
+        )
+        self.video_thread.start()
+
+    def stop_video(self):
+        print("Gesture tracking stopped.")
+        Backend.stop_tracking()
+        self.video_running = False
+        self.start_stop_button.configure(
+            text="Start Tracking", fg_color="#7b1fa2", hover_color="#9c27b0"
+        )
+        # Hide video view, restore instructions
+        self.video_label.pack_forget()
+        self.instruction_frame.pack(pady=15, padx=20, fill="both", expand=True)
+
+    def update_frame(self, rgb_image):
+        # Convert RGB numpy array to PIL Image
+        pil_img = Image.fromarray(rgb_image)
+        # Resize frame to fit GUI layout nicely (keeping 4:3 aspect ratio)
+        pil_img_resized = pil_img.resize((560, 420), Image.Resampling.LANCZOS)
+        # Create CTkImage for scaling support on HighDPI displays
+        ctk_img = ctk.CTkImage(light_image=pil_img_resized, dark_image=pil_img_resized, size=(560, 420))
+        # Thread-safe update of UI elements using after()
+        self.after(0, self._set_image, ctk_img)
+
+    def _set_image(self, ctk_img):
+        if self.video_running:
+            self.video_label.configure(image=ctk_img)
+            self.video_label.image = ctk_img
+
+    def handle_error(self, error_message):
+        # Schedule the error dialog and UI reset on the main thread
+        self.after(0, self._show_error, error_message)
+
+    def _show_error(self, error_message):
+        self.stop_video()
+        from tkinter import messagebox
+        messagebox.showerror("Camera Error", error_message)
+
+    def on_close(self):
+        if self.video_running:
+            self.stop_video()
+        self.destroy()
+
+# Run the App
+if __name__ == "__main__":
+    app = HandGestureApp()
+    app.mainloop()
+
+
+
+================================================
+File: diagram.mmd
+================================================
+graph TD;
+    A[Start] -->|Capture Video Frames| B[Webcam];
+    B -->|Process Frames| C[OpenCV];
+    C -->|Detect Hand Landmarks| D[MediaPipe Hands];
+    D -->|Extract Features| E[Feature Extraction];
+    E -->|Identify Gestures| F[Gesture Recognition];
+    F -->|Map to Keyboard Actions| G[PyAutoGUI];
+    G -->|Send Key Press Events| H[Slide Navigation];
+    H -->|Update GUI & Display Feedback| I[CustomTkinter];
+    I -->|Loop Until Stop| A;
+    I -->|User Stops Tracking| J[End];
+
+
+
+================================================
+File: main.py
+================================================
+import GUI
+
+if __name__ == "__main__":
+    app = GUI.HandGestureApp()
+    app.mainloop()
+
+
+================================================
+File: requirements.txt
+================================================
+absl-py==2.1.0
+attrs==25.1.0
+cffi==1.17.1
+contourpy==1.3.1
+customtkinter==5.2.2
+cycler==0.12.1
+darkdetect==0.8.0
+flatbuffers==25.2.10
+fonttools==4.56.0
+jax==0.5.2
+jaxlib==0.5.1
+kiwisolver==1.4.8
+matplotlib==3.10.1
+mediapipe==0.10.21
+ml_dtypes==0.5.1
+MouseInfo==0.1.3
+numpy==1.26.4
+opencv-contrib-python==4.11.0.86
+opencv-python==4.11.0.86
+opt_einsum==3.4.0
+packaging==24.2
+pillow==11.1.0
+protobuf==4.25.6
+PyAutoGUI==0.9.54
+pycparser==2.22
+PyGetWindow==0.0.9
+PyMsgBox==1.0.9
+pyparsing==3.2.1
+pyperclip==1.9.0
+PyRect==0.2.0
+PyScreeze==1.0.1
+python-dateutil==2.9.0.post0
+pytweening==1.2.0
+scipy==1.15.2
+sentencepiece==0.2.0
+six==1.17.0
+sounddevice==0.5.1
+
+
+
