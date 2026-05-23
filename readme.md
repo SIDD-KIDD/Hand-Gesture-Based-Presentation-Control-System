@@ -77,12 +77,12 @@ python main.py
 3. **Perform Gestures:**
 * **Step 1: Lock the Gesture**
 Close your middle, ring, and pinky fingers. Leave your thumb and index finger open. The screen will display **"Gesture Locked"** in green.
-![Alt Text](res\img1.jpg) 
+![Alt Text](res/img1.jpg) 
 
 * **Step 2: Click/Trigger**
 Pinch your thumb and index finger together (bringing the normalized distance below 0.2).
 
-![Alt Text](res\img2.jpg) 
+![Alt Text](res/img2.jpg) 
 * **Navigation:**
 * Doing this with your **Right Hand** simulates a `Right Arrow` key press (Next Slide).
 * Doing this with your **Left Hand** simulates a `Left Arrow` key press (Previous Slide).
